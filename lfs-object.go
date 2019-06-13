@@ -76,9 +76,22 @@ func (s *Shell) HeadObject(ObjectName, BucketName string, options ...LfsOpts) (*
 	return &objs, nil
 }
 
-func (s *Shell) GetObject(ObjectName, BucketName, outPath string, options ...LfsOpts) error {
-	var file *os.File
+func (s *Shell) GetObject(ObjectName, BucketName string, options ...LfsOpts) (io.ReadCloser, error) {
 	var err error
+	rb := s.Request("lfs/get_object", BucketName, ObjectName)
+	for _, option := range options {
+		option(rb)
+	}
+	resp, err := rb.Send(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	return resp.Output, err
+}
+
+func (s *Shell) GetObjectToFile(ObjectName, BucketName, outPath string, options ...LfsOpts) error {
+	var err error
+	var p string
 	rootExists := true
 	rootIsDir := false
 	if stat, err := os.Stat(outPath); err != nil && os.IsNotExist(err) {
@@ -89,20 +102,24 @@ func (s *Shell) GetObject(ObjectName, BucketName, outPath string, options ...Lfs
 		rootIsDir = true
 	}
 	if rootIsDir == true {
-		p := path.Join(outPath, ObjectName)
-		if _, err := os.Stat(p); err != nil && os.IsNotExist(err) {
-			file, err = os.Create(p)
-		} else {
-			return errors.New("The outpath already has file: " + ObjectName)
-		}
+		p = path.Join(outPath, ObjectName)
 	} else if rootExists == false {
-		file, err = os.Create(outPath)
+		p = outPath
+	} else {
+		return errors.New("The outpath already has file: " + ObjectName)
+	}
+	var file *os.File
+	if _, err := os.Stat(p); err != nil && os.IsNotExist(err) {
+		file, err = os.Create(p)
 		if err != nil {
 			return err
 		}
 	} else {
 		return errors.New("The outpath already has file: " + ObjectName)
 	}
+
+	defer file.Close()
+
 	rb := s.Request("lfs/get_object", BucketName, ObjectName)
 	for _, option := range options {
 		option(rb)
