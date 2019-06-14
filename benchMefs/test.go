@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/ipfs/go-ipfs/data-format"
-	"github.com/ipfs/go-ipfs/source/ansi"
 	"github.com/xcshuan/go-mefs-api"
 )
 
@@ -46,8 +45,10 @@ var outPath string
 var finishChan chan struct{}
 
 func main() {
+	rand.Seed(time.Now().Unix())
 	fmt.Println("  Begin to test upload and download...")
 	var UploadSuccess, Uploadfailed, DownloadSuccess, Downloadfailed int
+	var UploadSize int64
 	sh = shell.NewShell(endPoint)
 	Users := make([]*shell.UserPrivMessage, UserCount)
 	outPath = os.Getenv("GOPATH")
@@ -59,7 +60,7 @@ func main() {
 		if err != nil {
 			log.Println("Create User failed", err)
 		}
-		fmt.Println(ansi.Color("  Create User", ansi.Green), "Address", Users[i].Address, "Private Key", Users[i].Address)
+		fmt.Println("  Create User", "Address", Users[i].Address, "Private Key", Users[i].Address)
 		addr := Users[i].Address
 		go func() {
 			err = sh.StartUser(addr)
@@ -109,11 +110,12 @@ func main() {
 			for j := 0; j < ObjectCount; j++ {
 				//构造随机文件
 				r := rand.Int63n(RandomDataSize)
+				UploadSize += r
 				data := make([]byte, r)
 				fillRandom(data)
 				buf := bytes.NewBuffer(data)
 				objectName := addr + "_" + strconv.Itoa(int(r))
-				fmt.Println(ansi.Color("  Begin to upload", ansi.Green), objectName, "Size is", ToStorageSize(r), "addr", addr)
+				fmt.Println("  Begin to upload", objectName, "Size is", ToStorageSize(r), "addr", addr)
 				beginTime := time.Now().Unix()
 
 				//开始上传
@@ -126,11 +128,11 @@ func main() {
 				storagekb := float64(r) / 1024.0
 				endTime := time.Now().Unix()
 				speed := storagekb / float64(endTime-beginTime)
-				fmt.Println(ansi.Color("  Upload", ansi.Green), objectName, "Size is", ToStorageSize(r), "speed is", speed, "KB/s", "addr", addr)
+				fmt.Println("  Upload", objectName, "Size is", ToStorageSize(r), "speed is", speed, "KB/s", "addr", addr)
 				fmt.Println(ob.String() + "address: " + addr)
 
 				//下面开始下载
-				fmt.Println(ansi.Color("  Begin to download", ansi.Green), objectName, "Size is", ToStorageSize(r), "addr", addr)
+				fmt.Println("  Begin to download", objectName, "Size is", ToStorageSize(r), "addr", addr)
 
 				//设定输出路径
 				var p string
@@ -139,7 +141,7 @@ func main() {
 				if stat, err := os.Stat(outPath); err != nil && os.IsNotExist(err) {
 					rootExists = false
 				} else if err != nil {
-					fmt.Println(ansi.Color("  Get object", ansi.Green), objectName, "failed: ", "addr", addr, "err", err)
+					fmt.Println("  Get object", objectName, "failed: ", "addr", addr, "err", err)
 				} else if stat.IsDir() {
 					rootIsDir = true
 				}
@@ -154,7 +156,7 @@ func main() {
 				if _, err := os.Stat(p); err != nil && os.IsNotExist(err) {
 					file, err = os.Create(p)
 					if err != nil {
-						fmt.Println(ansi.Color("  Get object", ansi.Green), objectName, "failed: ", "addr", addr, "err", err)
+						fmt.Println("  Get object", objectName, "failed: ", "addr", addr, "err", err)
 					}
 				} else {
 					fmt.Println("The outpath already has file: " + objectName)
@@ -164,13 +166,13 @@ func main() {
 				if err != nil {
 					Downloadfailed++
 					file.Close()
-					fmt.Println(ansi.Color("  Get object", ansi.Green), objectName, "failed: ", "addr", addr, "err", err)
+					fmt.Println("  Get object", objectName, "failed: ", "addr", addr, "err", err)
 					continue
 				}
 				written, err := io.Copy(file, reader)
 				if err != nil {
 					Downloadfailed++
-					fmt.Println(ansi.Color("  Get object", ansi.Green), objectName, "failed: ", "addr", addr, "err", err)
+					fmt.Println("  Get object", objectName, "failed: ", "addr", addr, "err", err)
 				} else {
 					h := md5.New()
 					newOff, err := file.Seek(0, 0)
@@ -182,19 +184,19 @@ func main() {
 					md5Str := hex.EncodeToString(h.Sum(nil))
 					if strings.Compare(md5Str, ob.Objects[0].MD5) == 0 {
 						DownloadSuccess++
-						fmt.Println(ansi.Color("  Get object", ansi.Green), objectName, "sucsess: ", ToStorageSize(r), "addr", addr)
+						fmt.Println("  Get object", objectName, "sucsess: ", ToStorageSize(r), "addr", addr)
 					} else {
 						Downloadfailed++
-						fmt.Println(ansi.Color("  Md5 check failed, Get", ansi.Green), md5Str, "want", ob.Objects[0].MD5)
+						fmt.Println("  Md5 check failed, Get", md5Str, "want", ob.Objects[0].MD5)
 					}
 				}
 				file.Close()
 				endTime = time.Now().Unix()
 				storagekb = float64(written) / 1024.0
 				speed = storagekb / float64(endTime-beginTime)
-				fmt.Println(ansi.Color("  Download", ansi.Green), objectName, "Size is", ToStorageSize(r), "speed is", speed, "KB/s", "addr", addr)
+				fmt.Println("  Download", objectName, "Size is", ToStorageSize(r), "speed is", speed, "KB/s", "addr", addr)
 			}
-			fmt.Println(addr, ansi.Color("test finished.", ansi.Green))
+			fmt.Println(addr, "test finished.")
 			finishChan <- struct{}{}
 		}()
 	}
@@ -204,6 +206,7 @@ func main() {
 		case <-finishChan:
 			finishedCount++
 			if finishedCount >= UserCount {
+				fmt.Println("Upload size", ToStorageSize(UploadSize))
 				fmt.Printf("In this test:\nUpload %d Object success.\nUpload %d Object failed.\nDownload %d object success.\nDownload %d object failed.", UploadSuccess, Uploadfailed, DownloadSuccess, Downloadfailed)
 				fmt.Println("all tests finished, exit...")
 				return
