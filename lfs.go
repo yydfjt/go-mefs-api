@@ -3,6 +3,7 @@ package shell
 import (
 	"bytes"
 	"context"
+	"math/big"
 	"strconv"
 )
 
@@ -166,15 +167,15 @@ func (s *Shell) ShowStorage(options ...LfsOpts) error {
 	return nil
 }
 
-func (s *Shell) ShowBalance(options ...LfsOpts) (int64, error) {
-	var res int64
+func (s *Shell) ShowBalance(options ...LfsOpts) (*big.Int, error) {
+	var res *big.Int
 	rb := s.Request("lfs/show_balance")
 	for _, option := range options {
 		option(rb)
 	}
 
 	if err := rb.Exec(context.Background(), &res); err != nil {
-		return 0, err
+		return big.NewInt(0), err
 	}
 	return res, nil
 }
