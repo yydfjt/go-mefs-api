@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/ecdsa"
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"math/rand"
 	"os"
 	"path"
@@ -14,6 +17,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ipfs/go-ipfs/data-format"
 	"github.com/xcshuan/go-mefs-api"
 )
@@ -29,7 +36,7 @@ const endPoint = "localhost:5001"
 const UserCount = 3
 
 //每个用户上传对象数目
-const ObjectCount = 20
+const ObjectCount = 1
 
 //随机文件最大大小
 const RandomDataSize = 1024 * 1024 * 100
@@ -41,10 +48,14 @@ const ParityCount = 2
 //测试下载的输出路径
 var outPath string
 
+//上传下载间隔
+var sleepInterval = 5 * time.Second
+
 //用于通知结束与否
 var finishChan chan struct{}
 
 func main() {
+	var err error
 	rand.Seed(time.Now().Unix())
 	fmt.Println("  Begin to test upload and download...")
 	var UploadSuccess, Uploadfailed, DownloadSuccess, Downloadfailed int
@@ -53,7 +64,6 @@ func main() {
 	Users := make([]*shell.UserPrivMessage, UserCount)
 	outPath = os.Getenv("GOPATH")
 	finishChan = make(chan struct{}, UserCount)
-	var err error
 	//首先创建指定数量的User
 	for i := 0; i < UserCount; i++ {
 		Users[i], err = sh.CreateUser()
@@ -61,14 +71,7 @@ func main() {
 			log.Println("Create User failed", err)
 		}
 		fmt.Println("  Create User", "Address", Users[i].Address, "Private Key", Users[i].Address)
-		addr := Users[i].Address
-		go func() {
-			err = sh.StartUser(addr)
-			if err != nil {
-				log.Println("Start User failed", err)
-			}
-			fmt.Println("  Begin to start User", addr)
-		}()
+		transferTo(big.NewInt(1000000000000000000), Users[i].Address)
 	}
 
 	fmt.Println("Waiting for user start...")
@@ -76,6 +79,19 @@ func main() {
 		addr := Users[i].Address
 		flag := i
 		go func() {
+			for {
+				balance := queryBalance(addr)
+				if balance.Cmp(big.NewInt(10000000000)) > 0 {
+					break
+				}
+				fmt.Println(addr, "'s Balance now:", balance.String(), ", waiting for transfer success")
+				time.Sleep(10 * time.Second)
+			}
+			err = sh.StartUser(addr)
+			if err != nil {
+				log.Println("Start User failed", err)
+			}
+			fmt.Println("  Begin to start User", addr)
 			//等待此User启动LFS
 			for {
 				err := sh.ShowStorage(shell.SetAddress(addr))
@@ -130,7 +146,8 @@ func main() {
 				speed := storagekb / float64(endTime-beginTime)
 				fmt.Println("  Upload", objectName, "Size is", ToStorageSize(r), "speed is", speed, "KB/s", "addr", addr)
 				fmt.Println(ob.String() + "address: " + addr)
-
+				//等待一会，等上传完成
+				time.Sleep(sleepInterval)
 				//下面开始下载
 				fmt.Println("  Begin to download", objectName, "Size is", ToStorageSize(r), "addr", addr)
 
@@ -207,7 +224,7 @@ func main() {
 			finishedCount++
 			if finishedCount >= UserCount {
 				fmt.Println("Upload size", ToStorageSize(UploadSize))
-				fmt.Printf("In this test:\nUpload %d Object success.\nUpload %d Object failed.\nDownload %d object success.\nDownload %d object failed.", UploadSuccess, Uploadfailed, DownloadSuccess, Downloadfailed)
+				fmt.Printf("In this test:\nUpload %d Object success.\nUpload %d Object failed.\nDownload %d object success.\nDownload %d object failed.\n", UploadSuccess, Uploadfailed, DownloadSuccess, Downloadfailed)
 				fmt.Println("all tests finished, exit...")
 				return
 			}
@@ -237,4 +254,68 @@ func fillRandom(p []byte) {
 			val >>= 8
 		}
 	}
+}
+
+//链的endpoint
+const ethEndPoint = "http://212.64.28.207:8101"
+
+func transferTo(value *big.Int, addr string) {
+	client, err := ethclient.Dial(ethEndPoint)
+	if err != nil {
+		fmt.Println("rpc.Dial err", err)
+		log.Fatal(err)
+	}
+	privateKey, err := crypto.HexToECDSA("928969b4eb7fbca964a41024412702af827cbc950dbe9268eae9f5df668c85b4")
+	if err != nil {
+		log.Fatal(err)
+	}
+	publicKey := privateKey.Public()
+	publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
+	if !ok {
+		log.Fatal("error casting public key to ECDSA")
+	}
+	fromAddress := crypto.PubkeyToAddress(*publicKeyECDSA)
+	nonce, err := client.PendingNonceAt(context.Background(), fromAddress)
+	if err != nil {
+		log.Fatal(err)
+	}
+	gasLimit := uint64(21000) // in units
+
+	gasPrice := big.NewInt(30000000000) // in wei (30 gwei)
+	gasPrice, err = client.SuggestGasPrice(context.Background())
+	if err != nil {
+		log.Fatal(err)
+	}
+	toAddress := common.HexToAddress(addr[2:])
+	tx := types.NewTransaction(nonce, toAddress, value, gasLimit, gasPrice, nil)
+
+	chainID, err := client.NetworkID(context.Background())
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainID), privateKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+	err = client.SendTransaction(context.Background(), signedTx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("transfer ", value.String(), "to", addr)
+	fmt.Printf("tx sent: %s\n", signedTx.Hash().Hex())
+}
+
+func queryBalance(addr string) *big.Int {
+	client, err := ethclient.Dial(ethEndPoint)
+	if err != nil {
+		fmt.Println("rpc.Dial err", err)
+		log.Fatal(err)
+	}
+	Address := common.HexToAddress(addr[2:])
+	balance, err := client.PendingBalanceAt(context.Background(), Address)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return balance
 }
