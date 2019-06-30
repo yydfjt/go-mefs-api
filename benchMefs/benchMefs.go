@@ -25,31 +25,33 @@ import (
 	"github.com/xcshuan/go-mefs-api"
 )
 
-var TestLog map[string]map[string]int
 var sh *shell.Shell
 
 //一些可调参数
-
 const endPoint = "localhost:5001"
 
 //用户数
 const UserCount = 3
 
 //每个用户上传对象数目
-const ObjectCount = 1
+const ObjectCount = 2
 
 //随机文件最大大小
 const RandomDataSize = 1024 * 1024 * 100
 const BucketName = "Bucket01"
-const Policy = dataformat.RsPolicy
+
+//这里填的参数按照纠删码填，多副本会自动转换
 const DataCount = 3
 const ParityCount = 2
 
 //测试下载的输出路径
-var outPath string
+var outPath string = os.Getenv("GOPATH")
+
+//测试User还是部署合约
+var IsTest = false
 
 //上传下载间隔
-var sleepInterval = 5 * time.Second
+var sleepInterval = 10 * time.Second
 
 //用于通知结束与否
 var finishChan chan struct{}
@@ -62,7 +64,6 @@ func main() {
 	var UploadSize int64
 	sh = shell.NewShell(endPoint)
 	Users := make([]*shell.UserPrivMessage, UserCount)
-	outPath = os.Getenv("GOPATH")
 	finishChan = make(chan struct{}, UserCount)
 	//首先创建指定数量的User
 	for i := 0; i < UserCount; i++ {
@@ -71,7 +72,10 @@ func main() {
 			log.Println("Create User failed", err)
 		}
 		fmt.Println("  Create User", "Address", Users[i].Address, "Private Key", Users[i].Address)
-		transferTo(big.NewInt(1000000000000000000), Users[i].Address)
+
+		if !IsTest {
+			transferTo(big.NewInt(1000000000000000000), Users[i].Address)
+		}
 	}
 
 	fmt.Println("Waiting for user start...")
@@ -79,13 +83,15 @@ func main() {
 		addr := Users[i].Address
 		flag := i
 		go func() {
-			for {
-				balance := queryBalance(addr)
-				if balance.Cmp(big.NewInt(10000000000)) > 0 {
-					break
+			if !IsTest {
+				for {
+					balance := queryBalance(addr)
+					if balance.Cmp(big.NewInt(10000000000)) > 0 {
+						break
+					}
+					fmt.Println(addr, "'s Balance now:", balance.String(), ", waiting for transfer success")
+					time.Sleep(10 * time.Second)
 				}
-				fmt.Println(addr, "'s Balance now:", balance.String(), ", waiting for transfer success")
-				time.Sleep(10 * time.Second)
 			}
 			err = sh.StartUser(addr)
 			if err != nil {
@@ -131,25 +137,29 @@ func main() {
 				fillRandom(data)
 				buf := bytes.NewBuffer(data)
 				objectName := addr + "_" + strconv.Itoa(int(r))
-				fmt.Println("  Begin to upload", objectName, "Size is", ToStorageSize(r), "addr", addr)
+				fmt.Println("  Begin to upload the ", j, "st", objectName, "Size is", toStorageSize(r), "addr", addr)
 				beginTime := time.Now().Unix()
 
 				//开始上传
 				ob, err := sh.PutObject(buf, objectName, BucketName, shell.SetAddress(addr))
-				if err != nil {
-					log.Println(addr, "Upload filed", err)
+				if err != nil || ob == nil {
+					log.Println(addr, "Upload", objectName, "filed", err)
 					Uploadfailed++
+					Downloadfailed++
+					continue
 				}
+
 				UploadSuccess++
 				storagekb := float64(r) / 1024.0
 				endTime := time.Now().Unix()
 				speed := storagekb / float64(endTime-beginTime)
-				fmt.Println("  Upload", objectName, "Size is", ToStorageSize(r), "speed is", speed, "KB/s", "addr", addr)
+				fmt.Println("  Upload", objectName, "Size is", toStorageSize(r), "speed is", speed, "KB/s", "addr", addr)
 				fmt.Println(ob.String() + "address: " + addr)
+
 				//等待一会，等上传完成
 				time.Sleep(sleepInterval)
 				//下面开始下载
-				fmt.Println("  Begin to download", objectName, "Size is", ToStorageSize(r), "addr", addr)
+				fmt.Println("  Begin to download", objectName, "Size is", toStorageSize(r), "addr", addr)
 
 				//设定输出路径
 				var p string
@@ -167,17 +177,19 @@ func main() {
 				} else if rootExists == false {
 					p = outPath
 				} else {
+					//如果已存在，覆盖
+					p = outPath
 					fmt.Println("The outpath already has file: " + objectName)
 				}
+
 				var file *os.File
-				if _, err := os.Stat(p); err != nil && os.IsNotExist(err) {
-					file, err = os.Create(p)
-					if err != nil {
-						fmt.Println("  Get object", objectName, "failed: ", "addr", addr, "err", err)
-					}
-				} else {
-					fmt.Println("The outpath already has file: " + objectName)
+				//已存在文件也覆盖
+				file, err = os.Create(p)
+				if err != nil {
+					fmt.Println("  Get object", objectName, "failed: ", "addr", addr, "err", err)
+					continue
 				}
+
 				beginTime = time.Now().Unix()
 				reader, err := sh.GetObject(objectName, BucketName, shell.SetAddress(addr))
 				if err != nil {
@@ -201,7 +213,7 @@ func main() {
 					md5Str := hex.EncodeToString(h.Sum(nil))
 					if strings.Compare(md5Str, ob.Objects[0].MD5) == 0 {
 						DownloadSuccess++
-						fmt.Println("  Get object", objectName, "sucsess: ", ToStorageSize(r), "addr", addr)
+						fmt.Println("  Get object", objectName, "sucsess: ", toStorageSize(r), "addr", addr)
 					} else {
 						Downloadfailed++
 						fmt.Println("  Md5 check failed, Get", md5Str, "want", ob.Objects[0].MD5)
@@ -211,7 +223,7 @@ func main() {
 				endTime = time.Now().Unix()
 				storagekb = float64(written) / 1024.0
 				speed = storagekb / float64(endTime-beginTime)
-				fmt.Println("  Download", objectName, "Size is", ToStorageSize(r), "speed is", speed, "KB/s", "addr", addr)
+				fmt.Println("  Download", objectName, "Size is", toStorageSize(r), "written is", toStorageSize(written), "speed is", speed, "KB/s", "addr", addr)
 			}
 			fmt.Println(addr, "test finished.")
 			finishChan <- struct{}{}
@@ -223,7 +235,7 @@ func main() {
 		case <-finishChan:
 			finishedCount++
 			if finishedCount >= UserCount {
-				fmt.Println("Upload size", ToStorageSize(UploadSize))
+				fmt.Println("Upload size", toStorageSize(UploadSize))
 				fmt.Printf("In this test:\nUpload %d Object success.\nUpload %d Object failed.\nDownload %d object success.\nDownload %d object failed.\n", UploadSuccess, Uploadfailed, DownloadSuccess, Downloadfailed)
 				fmt.Println("all tests finished, exit...")
 				return
@@ -231,7 +243,8 @@ func main() {
 		}
 	}
 }
-func ToStorageSize(r int64) string {
+
+func toStorageSize(r int64) string {
 	FloatStorage := float64(r)
 	var OutStorage string
 	if FloatStorage < 1024 && FloatStorage >= 0 {
