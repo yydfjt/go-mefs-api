@@ -3,8 +3,12 @@ package shell
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"math/big"
 	"strconv"
+
+	peer "github.com/ipfs/go-ipfs/source/go-libp2p-peer"
+	pstore "github.com/ipfs/go-ipfs/source/go-libp2p-peerstore"
 )
 
 type UserPrivMessage struct {
@@ -116,6 +120,59 @@ func UseErasureCodeOrMulRep(enabled bool) LfsOpts {
 	}
 }
 
+type PeerState struct {
+	PeerID    string
+	Connected bool
+}
+
+func (ps PeerState) String() string {
+	if ps.Connected {
+		return ps.PeerID + " connected"
+	}
+	return ps.PeerID + " unconnected"
+}
+
+type PeerList struct {
+	Peers []PeerState
+}
+
+func (pl PeerList) String() string {
+	var res string
+	for _, ps := range pl.Peers {
+		res += ps.String() + "\n"
+	}
+	return res
+}
+
+type QueryEventType int
+
+const (
+	SendingQuery QueryEventType = iota
+	PeerResponse
+	FinalPeer
+	QueryError
+	Provider
+	Value
+	AddingPeer
+	DialingPeer
+)
+
+type QueryEvent struct {
+	ID        peer.ID
+	Type      QueryEventType
+	Responses []*pstore.PeerInfo
+	Extra     string
+}
+
+type GetBlockResult struct {
+	IsExist bool
+}
+
+type BlockStat struct {
+	Key  string
+	Size int
+}
+
 func (s *Shell) CreateUser(options ...LfsOpts) (*UserPrivMessage, error) {
 	var user UserPrivMessage
 	rb := s.Request("create")
@@ -176,6 +233,59 @@ func (s *Shell) ShowBalance(options ...LfsOpts) (*big.Int, error) {
 
 	if err := rb.Exec(context.Background(), &res); err != nil {
 		return big.NewInt(0), err
+	}
+	return res, nil
+}
+
+func (s *Shell) ListKeepers(options ...LfsOpts) (*PeerList, error) {
+	var res *PeerList
+	rb := s.Request("lfs/list_keepers")
+	for _, option := range options {
+		option(rb)
+	}
+
+	if err := rb.Exec(context.Background(), &res); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+func (s *Shell) ChallengeTest(key, to string, options ...LfsOpts) (string, error) {
+	var res string
+	rb := s.Request("dht/challengeTest", key, to)
+	for _, option := range options {
+		option(rb)
+	}
+
+	if err := rb.Exec(context.Background(), &res); err != nil {
+		return "", err
+	}
+	return res, nil
+}
+
+func (s *Shell) GetFrom(key, id string, options ...LfsOpts) (*QueryEvent, error) {
+	var res *QueryEvent
+	rb := s.Request("dht/getfrom", key, id)
+	for _, option := range options {
+		option(rb)
+	}
+
+	if err := rb.Exec(context.Background(), &res); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+func (s *Shell) GetBlockFrom(key, id string, options ...LfsOpts) (string, error) {
+	fmt.Println("in GetBlockFrom")
+	var res string
+	rb := s.Request("block/getfrom", key, id)
+	for _, option := range options {
+		option(rb)
+	}
+
+	if err := rb.Exec(context.Background(), &res); err != nil {
+		return "", err
 	}
 	return res, nil
 }
